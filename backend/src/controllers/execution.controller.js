@@ -46,7 +46,7 @@ export async function handleSubmissionExecution(req, res) {
     const results = await runTestCases(
       submission.code,
       submission.language,
-      submission.problem_id
+      submission.assignment_id
     );
 
     // Update submission in database

@@ -2,12 +2,12 @@ import { executeCode } from './piston.service.js';
 import { getTestCases } from './database.service.js';
 import { calculateGrade } from './grading.service.js';
 
-export async function runTestCases(code, language, problemId) {
+export async function runTestCases(code, language, assignmentId) {
   // Fetch test cases from database
-  const testCases = await getTestCases(problemId);
+  const testCases = await getTestCases(assignmentId);
   
   if (!testCases || testCases.length === 0) {
-    throw new Error('No test cases found for this problem');
+    throw new Error('No test cases found for this assignment');
   }
 
   const results = [];
@@ -18,9 +18,9 @@ export async function runTestCases(code, language, problemId) {
   // Run each test case
   for (const testCase of testCases) {
     try {
-      const result = await executeCode(code, language, testCase.input);
+      const result = await executeCode(code, language, testCase.input_data);
       
-      const passed = result.output === testCase.expected_output.trim() && result.exitCode === 0;
+      const passed = result.output.trim() === testCase.expected_output.trim() && result.exitCode === 0;
       
       if (passed) passedTests++;
       
@@ -28,8 +28,8 @@ export async function runTestCases(code, language, problemId) {
       totalMemory += result.memory;
 
       results.push({
-        testCaseId: testCase.id,
-        input: testCase.input,
+        testCaseId: testCase.test_case_id,
+        input: testCase.input_data,
         expectedOutput: testCase.expected_output,
         actualOutput: result.output,
         error: result.error,
@@ -40,8 +40,8 @@ export async function runTestCases(code, language, problemId) {
 
     } catch (error) {
       results.push({
-        testCaseId: testCase.id,
-        input: testCase.input,
+        testCaseId: testCase.test_case_id,
+        input: testCase.input_data,
         expectedOutput: testCase.expected_output,
         actualOutput: '',
         error: error.message,

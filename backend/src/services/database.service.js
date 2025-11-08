@@ -28,20 +28,20 @@ export async function getSubmission(submissionId) {
   const { data, error } = await supabase
     .from('submissions')
     .select('*')
-    .eq('id', submissionId)
+    .eq('submission_id', submissionId)
     .single();
 
   if (error) throw new Error(`Failed to fetch submission: ${error.message}`);
   return data;
 }
 
-// Fetch test cases for a problem
-export async function getTestCases(problemId) {
+// Fetch test cases for an assignment
+export async function getTestCases(assignmentId) {
   const { data, error } = await supabase
     .from('test_cases')
     .select('*')
-    .eq('problem_id', problemId)
-    .order('id', { ascending: true });
+    .eq('assignment_id', assignmentId)
+    .order('test_case_id', { ascending: true });
 
   if (error) throw new Error(`Failed to fetch test cases: ${error.message}`);
   return data;
@@ -53,15 +53,11 @@ export async function updateSubmissionResults(submissionId, results) {
     .from('submissions')
     .update({
       status: results.status,
-      passed_tests: results.passedTests,
-      total_tests: results.totalTests,
-      runtime_ms: results.avgRuntime,
-      memory_mb: results.avgMemory,
-      grade: results.grade,
-      test_results: results.testResults,
-      updated_at: new Date().toISOString()
+      score: results.score || 0,
+      avg_execution_time: results.avgRuntime,
+      graded_at: new Date().toISOString()
     })
-    .eq('id', submissionId)
+    .eq('submission_id', submissionId)
     .select();
 
   if (error) throw new Error(`Failed to update submission: ${error.message}`);
