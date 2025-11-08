@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node index.js"
+    "start": "node index.js",
+    "worker": "node src/workers/submission.worker.js",
+    "dev": "node index.js",
+    "dev:worker": "node src/workers/submission.worker.js"
   },
   "keywords": [],
   "author": "",
@@ -15,9 +18,12 @@
     "@supabase/supabase-js": "^2.80.0",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
+    "bull": "^4.12.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "express-rate-limit": "^7.1.5",
+    "ioredis": "^5.3.2",
     "jsonwebtoken": "^9.0.2"
   }
 }

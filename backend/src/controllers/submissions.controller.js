@@ -1,30 +1,15 @@
 import { supabase } from '../config/supabase.js';
-import { runTestCases } from '../services/testRunner.service.js';
 import { executeCode } from '../services/piston.service.js';
+import { runTestCases } from '../services/testRunner.service.js';
 import { calculateGrade } from '../services/grading.service.js';
+import { submissionQueue } from '../services/queue.service.js';
 
 // Get all submissions
 export async function getSubmissions(req, res) {
   try {
     const { data, error } = await supabase
       .from('submissions')
-      .select(`
-        *,
-        assignments:assignment_id (
-          assignment_id,
-          title,
-          language
-        ),
-        students:student_id (
-          student_id,
-          roll_no,
-          users:user_id (
-            user_id,
-            name,
-            email
-          )
-        )
-      `)
+      .select('*')
       .order('submitted_at', { ascending: false });
 
     if (error) throw error;
@@ -42,24 +27,7 @@ export async function getSubmissionById(req, res) {
     
     const { data, error } = await supabase
       .from('submissions')
-      .select(`
-        *,
-        assignments:assignment_id (
-          assignment_id,
-          title,
-          description,
-          language
-        ),
-        students:student_id (
-          student_id,
-          roll_no,
-          users:user_id (
-            user_id,
-            name,
-            email
-          )
-        )
-      `)
+      .select('*')
       .eq('submission_id', submissionId)
       .single();
 
@@ -67,6 +35,7 @@ export async function getSubmissionById(req, res) {
     if (!data) {
       return res.status(404).json({ error: 'Submission not found' });
     }
+    
     res.json(data);
   } catch (error) {
     console.error('Error fetching submission:', error);
@@ -87,7 +56,6 @@ export async function getSubmissionsByAssignment(req, res) {
           student_id,
           roll_no,
           users:user_id (
-            user_id,
             name,
             email
           )
@@ -126,39 +94,37 @@ export async function getSubmissionsByStudent(req, res) {
     if (error) throw error;
 
     // Calculate average scores per assignment
-    const assignmentScores = {};
+    const assignmentSubmissions = new Map();
     data?.forEach(sub => {
       const assignmentId = sub.assignment_id;
-      if (!assignmentScores[assignmentId]) {
-        assignmentScores[assignmentId] = {
-          assignment_id: assignmentId,
-          assignment_title: sub.assignments?.title,
-          submissions: [],
-          averageScore: 0,
-          averagePercentage: 0
-        };
+      if (!assignmentSubmissions.has(assignmentId)) {
+        assignmentSubmissions.set(assignmentId, []);
       }
-      if (sub.status === 'graded') {
-        assignmentScores[assignmentId].submissions.push(sub);
-      }
+      assignmentSubmissions.get(assignmentId).push(sub);
     });
 
     // Calculate averages
-    Object.keys(assignmentScores).forEach(assignmentId => {
-      const assignment = assignmentScores[assignmentId];
-      if (assignment.submissions.length > 0) {
-        const totalScore = assignment.submissions.reduce((sum, s) => sum + (s.score || 0), 0);
-        const maxScore = assignment.submissions[0].max_score || 100;
-        assignment.averageScore = Math.round(totalScore / assignment.submissions.length);
-        assignment.averagePercentage = Math.round((assignment.averageScore / maxScore) * 100);
+    const assignmentAverages = new Map();
+    assignmentSubmissions.forEach((subs, assignmentId) => {
+      const gradedSubs = subs.filter(s => s.status === 'graded' && s.score !== null);
+      if (gradedSubs.length > 0) {
+        const totalScore = gradedSubs.reduce((sum, s) => sum + (s.score || 0), 0);
+        const maxScore = gradedSubs[0].max_score || 100;
+        const avgScore = Math.round(totalScore / gradedSubs.length);
+        const avgPercentage = Math.round((avgScore / maxScore) * 100);
+        assignmentAverages.set(assignmentId, {
+          averageScore: avgPercentage,
+          totalSubmissions: gradedSubs.length,
+          latestSubmission: subs.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at))[0]
+        });
       }
     });
 
     // Add average info to each submission
     const enrichedData = data?.map(sub => ({
       ...sub,
-      assignmentAverage: assignmentScores[sub.assignment_id]?.averagePercentage || null,
-      totalSubmissionsForAssignment: assignmentScores[sub.assignment_id]?.submissions.length || 1
+      assignmentAverage: assignmentAverages.get(sub.assignment_id)?.averagePercentage || null,
+      totalSubmissionsForAssignment: assignmentAverages.get(sub.assignment_id)?.totalSubmissions || 1
     }));
 
     res.json(enrichedData || data);
@@ -207,16 +173,16 @@ export async function createSubmission(req, res) {
   }
 }
 
-// Execute and submit code
+// Execute and submit code (with queue support)
 export async function executeAndSubmit(req, res) {
   try {
-    const { assignment_id, student_id, code, language, runOnly } = req.body;
+    const { assignment_id, student_id, code, language, runOnly, useQueue = true } = req.body;
 
     if (!assignment_id || !code || !language) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // If runOnly, just execute without saving
+    // If runOnly, just execute without saving (no queue needed)
     if (runOnly) {
       const result = await executeCode(code, language, '');
       return res.json({
@@ -235,22 +201,6 @@ export async function executeAndSubmit(req, res) {
       .single();
 
     if (assignmentError) throw assignmentError;
-
-    // Run test cases
-    const testResults = await runTestCases(code, language, assignment_id);
-
-    // Calculate percentage score based on test results and performance
-    const maxScore = assignment.max_score || 100;
-    const score = calculateGrade(
-      testResults.avgRuntime,
-      testResults.avgMemory,
-      testResults.passedTests,
-      testResults.totalTests,
-      maxScore
-    );
-    
-    // Ensure score is between 0 and maxScore
-    const finalScore = Math.max(0, Math.min(maxScore, Math.round(score)));
 
     // Check deadline and resubmission limit if student_id is provided
     if (student_id) {
@@ -295,10 +245,11 @@ export async function executeAndSubmit(req, res) {
       }
     }
 
-    // Always create a new submission (allow resubmissions until deadline)
+    const maxScore = assignment.max_score || 100;
+
+    // Create submission record first (with pending status)
     let submission;
     if (student_id) {
-      // Create new submission (don't update existing ones)
       const { data, error } = await supabase
         .from('submissions')
         .insert({
@@ -306,11 +257,10 @@ export async function executeAndSubmit(req, res) {
           student_id,
           code,
           language,
-          score: finalScore,
+          score: 0,
           max_score: maxScore,
-          status: testResults.status === 'accepted' ? 'graded' : 'error',
-          avg_execution_time: testResults.avgRuntime,
-          graded_at: new Date().toISOString()
+          status: 'pending', // Will be updated by worker
+          avg_execution_time: null
         })
         .select()
         .single();
@@ -318,7 +268,75 @@ export async function executeAndSubmit(req, res) {
       if (error) throw error;
       submission = data;
 
-      // Delete old test results before inserting new ones (to prevent duplicates)
+      // Use queue for async processing (only if explicitly enabled)
+      // Default to synchronous mode for backward compatibility with frontend
+      if (useQueue === true && process.env.USE_QUEUE === 'true') {
+        try {
+          // Add job to queue
+          const job = await submissionQueue.add({
+            submission_id: submission.submission_id,
+            assignment_id,
+            code,
+            language,
+            student_id,
+            max_score: maxScore,
+          }, {
+            priority: 1, // Normal priority
+            jobId: `submission-${submission.submission_id}`, // Unique job ID
+          });
+
+          // Return immediately with job info (frontend can poll for status)
+          return res.json({
+            submission,
+            jobId: job.id,
+            status: 'queued',
+            message: 'Submission queued for processing. Check status later.',
+            queuePosition: await submissionQueue.getJobCounts(),
+            // Include submission_id for frontend to poll status
+            submission_id: submission.submission_id,
+          });
+        } catch (queueError) {
+          console.error('Queue error, falling back to synchronous processing:', queueError);
+          // Fall through to synchronous processing if queue fails
+        }
+      }
+    }
+
+    // Synchronous processing (fallback or for testing)
+    // Run test cases
+    const testResults = await runTestCases(code, language, assignment_id);
+
+    // Calculate percentage score based on test results and performance
+    const score = calculateGrade(
+      testResults.avgRuntime,
+      testResults.avgMemory,
+      testResults.passedTests,
+      testResults.totalTests,
+      maxScore
+    );
+    
+    // Ensure score is between 0 and maxScore
+    const finalScore = Math.max(0, Math.min(maxScore, Math.round(score)));
+
+    if (student_id && submission) {
+      // Update submission
+      const { data: updatedSubmission, error: updateError } = await supabase
+        .from('submissions')
+        .update({
+          score: finalScore,
+          max_score: maxScore,
+          status: testResults.status === 'accepted' ? 'graded' : 'error',
+          avg_execution_time: testResults.avgRuntime,
+          graded_at: new Date().toISOString()
+        })
+        .eq('submission_id', submission.submission_id)
+        .select()
+        .single();
+
+      if (updateError) throw updateError;
+      submission = updatedSubmission;
+
+      // Delete old test results before inserting new ones
       await supabase
         .from('test_results')
         .delete()
@@ -343,7 +361,7 @@ export async function executeAndSubmit(req, res) {
                 passed: testResult.passed,
                 actual_output: testResult.actualOutput,
                 execution_time: testResult.runtime,
-                memory_used: Math.round(testResult.memory || 0), // Round to integer for INT column
+                memory_used: Math.round(testResult.memory || 0),
                 error_message: testResult.error,
                 status: testResult.passed ? 'Accepted' : 'Wrong Answer'
               };
@@ -411,3 +429,43 @@ export async function executeAndSubmit(req, res) {
   }
 }
 
+// Get submission status (for queue-based submissions)
+export async function getSubmissionStatus(req, res) {
+  try {
+    const { submissionId } = req.params;
+    
+    // Get submission from database
+    const { data: submission, error } = await supabase
+      .from('submissions')
+      .select('*')
+      .eq('submission_id', submissionId)
+      .single();
+
+    if (error) throw error;
+    if (!submission) {
+      return res.status(404).json({ error: 'Submission not found' });
+    }
+
+    // Check if job exists in queue
+    const job = await submissionQueue.getJob(`submission-${submissionId}`);
+    
+    let queueStatus = null;
+    if (job) {
+      const state = await job.getState();
+      queueStatus = {
+        jobId: job.id,
+        state,
+        progress: job.progress,
+        attemptsMade: job.attemptsMade,
+      };
+    }
+
+    res.json({
+      submission,
+      queueStatus,
+    });
+  } catch (error) {
+    console.error('Error getting submission status:', error);
+    res.status(500).json({ error: error.message });
+  }
+}

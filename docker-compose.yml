@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # Redis for queue management
+  redis:
+    image: redis:7-alpine
+    container_name: d3-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - d3-network
+    restart: unless-stopped
+
+  # Backend API servers (scalable)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3000"  # Expose port 3000 (Nginx will handle external access)
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - USE_QUEUE=${USE_QUEUE:-false}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - PISTON_URL=${PISTON_URL:-http://piston:2000}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - d3-network
+    restart: unless-stopped
+
+  # Worker processes for processing submissions
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - PISTON_URL=${PISTON_URL:-http://piston:2000}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - d3-network
+    restart: unless-stopped
+
+  # Nginx load balancer
+  nginx:
+    image: nginx:alpine
+    container_name: d3-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - backend
+    networks:
+      - d3-network
+    restart: unless-stopped
+
+  # Optional: Piston API for code execution (if not using external service)
+  # Uncomment if you want to run Piston in Docker
+  # piston:
+  #   image: ghcr.io/engineer-man/piston:latest
+  #   container_name: d3-piston
+  #   ports:
+  #     - "2000:2000"
+  #   networks:
+  #     - d3-network
+  #   restart: unless-stopped
+
+volumes:
+  redis-data:
+
+networks:
+  d3-network:
+    driver: bridge

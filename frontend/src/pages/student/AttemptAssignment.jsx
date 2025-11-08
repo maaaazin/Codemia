@@ -112,7 +112,14 @@ const AttemptAssignment = () => {
         runOnly: false
       })
 
-      // Update test results with detailed information
+      // Handle queue mode response
+      if (result.status === 'queued' && result.jobId) {
+        setOutput(`⏳ Submission queued for processing (Job ID: ${result.jobId})\n\nYour submission is being processed. Please check back in a moment.`)
+        // Optionally poll for status (can be implemented later)
+        return
+      }
+
+      // Update test results with detailed information (synchronous mode)
       if (result.testResults && result.testResults.testResults) {
         const detailedResults = result.testResults.testResults.map(tr => ({
           testCaseId: tr.testCaseId,
@@ -166,8 +173,10 @@ const AttemptAssignment = () => {
       // User can manually navigate to submissions page if needed
     } catch (error) {
       console.error('Error submitting:', error)
-      // Check if it's a resubmission limit error
-      if (error.message && error.message.includes('Maximum resubmission limit')) {
+      // Check if it's a rate limit error
+      if (error.message && (error.message.includes('Too many') || error.message.includes('rate limit'))) {
+        setOutput(`⏱️ ${error.message}\n\nPlease wait a moment before submitting again.`)
+      } else if (error.message && error.message.includes('Maximum resubmission limit')) {
         setOutput(`❌ ${error.message}\n\nYou have reached the maximum of 3 submissions for this assignment.`)
       } else {
         setOutput(`Error: ${error.message}`)

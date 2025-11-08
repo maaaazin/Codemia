@@ -1,13 +1,14 @@
 import express from 'express';
 import {
   getSubmissions,
-  getSubmissionById,
-  createSubmission,
   getSubmissionsByAssignment,
   getSubmissionsByStudent,
-  executeAndSubmit
+  createSubmission,
+  executeAndSubmit,
+  getSubmissionStatus
 } from '../controllers/submissions.controller.js';
 import { authenticateToken, requireRole } from '../middleware/auth.middleware.js';
+import { submissionLimiter } from '../middleware/rateLimiter.middleware.js';
 
 const router = express.Router();
 
@@ -20,14 +21,14 @@ router.get('/assignment/:assignmentId', authenticateToken, requireRole('teacher'
 // Get submissions by student (student can view their own, teacher can view any)
 router.get('/student/:studentId', authenticateToken, getSubmissionsByStudent);
 
-// Get submission by ID (authenticated users)
-router.get('/:submissionId', authenticateToken, getSubmissionById);
+// Get submission status (for queue-based submissions)
+router.get('/status/:submissionId', authenticateToken, getSubmissionStatus);
 
 // Create submission (authenticated users - students submit)
 router.post('/', authenticateToken, createSubmission);
 
 // Execute and submit code (authenticated users - students submit)
-router.post('/execute', authenticateToken, executeAndSubmit);
+// Rate limited: 10 submissions per minute per user
+router.post('/execute', authenticateToken, submissionLimiter, executeAndSubmit);
 
 export default router;
-

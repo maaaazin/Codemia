@@ -73,6 +73,7 @@ export const submissionsAPI = {
   getById: (id) => apiCall(`/submissions/${id}`),
   getByAssignment: (assignmentId) => apiCall(`/submissions/assignment/${assignmentId}`),
   getByStudent: (studentId) => apiCall(`/submissions/student/${studentId}`),
+  getStatus: (submissionId) => apiCall(`/submissions/status/${submissionId}`),
   create: (data) => apiCall('/submissions', {
     method: 'POST',
     body: JSON.stringify(data),
